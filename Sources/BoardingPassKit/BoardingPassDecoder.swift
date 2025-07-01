@@ -147,9 +147,15 @@ open class BoardingPassDecoder: NSObject {
     
     /// This returns a conditional field give it does not go over the length specified
     private func conditional(_ length: Int) throws -> String {
-        if (data.count < index + length) &&
-           (endConditional > 0)
-        { throw BoardingPassError.ConditionalIndexInvalid(endConditional, subConditional) }
+        // Make sure we never read past the available data. The previous logic
+        // only performed this check when `endConditional` was greater than 0
+        // which meant that for some inputs we would attempt to slice beyond
+        // the end of the Data buffer and hit a runtime trap. We now *always*
+        // verify that there are enough bytes remaining.
+
+        guard data.count >= index + length else {
+            throw BoardingPassError.ConditionalIndexInvalid(endConditional, subConditional)
+        }
         
         if subConditional != 0
         { subConditional -= length }
@@ -182,11 +188,27 @@ open class BoardingPassDecoder: NSObject {
     
     /// Read the next section of data of a given length and return the string value
     private func readdata(_ length: Int) throws -> String {
+        // Ensure we do not attempt to slice beyond the available data – this would
+        // otherwise trigger a fatal error at runtime. Since this helper is used by
+        // both `mandatory` and `conditional` reads, we perform an explicit bounds
+        // check here so that **any** out-of-range access is surfaced as a Swift
+        // error instead of a crash that cannot be caught by callers.
+
+        guard data.count >= index + length else {
+            // When this happens the underlying boarding-pass string is shorter
+            // than what the specification (or the previous conditional/mandatory
+            // length declaration) claims. We surface the issue using the same
+            // error that `mandatory` employs so existing call-sites can handle it
+            // uniformly.
+            throw BoardingPassError.MandatoryItemNotFound(index: index)
+        }
+
         let subdata = data.subdata(in: index ..< (index + length))
         index += length
-        
-        guard let rawString = String(data: subdata, encoding: String.Encoding.ascii)
-        else { throw BoardingPassError.DataFailedStringDecoding }
+
+        guard let rawString = String(data: subdata, encoding: String.Encoding.ascii) else {
+            throw BoardingPassError.DataFailedStringDecoding
+        }
         return rawString
     }
     
